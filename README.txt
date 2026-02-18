@@ -1,0 +1,12 @@
+Nombres del equipo (D2L):
+- [PONER NOMBRE COMPLETO 1]
+- [PONER NOMBRE COMPLETO 2]
+- [PONER NOMBRE COMPLETO 3]
+
+Contribuciones:
+- [NOMBRE 1]: [DESCRIBIR APORTES]
+- [NOMBRE 2]: [DESCRIBIR APORTES]
+- [NOMBRE 3]: [DESCRIBIR APORTES]
+
+Comentarios/observaciones:
+- [AQUI]

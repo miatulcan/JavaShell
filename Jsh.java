@@ -4,69 +4,304 @@ import java.util.*;
 public class Jsh {
 
     private static File currentDirectory = new File("/");
-    private static Scanner sc = new Scanner(System.in);
+    private static final Scanner sc = new Scanner(System.in);
+    private static final List<String> history = new ArrayList<>();
+    private static int jobCounter = 1;
 
     public static void main(String[] args) {
 
         boolean running = true;
 
         while (running) {
-
             System.out.print("jsh:" + currentDirectory.getAbsolutePath() + ">> ");
-            String input = sc.nextLine().trim();
+            String rawLine = sc.nextLine();
+            if (rawLine == null) break;
 
+            String input = rawLine.trim();
             if (input.isEmpty()) continue;
-
-            // ===== BUILTINS =====
 
             if (input.equals("exit")) {
                 running = false;
+                addHistory(input);
                 continue;
             }
 
-            if (input.equals("pwd")) {
-                System.out.println(currentDirectory.getAbsolutePath());
-                continue;
-            }
-
-            if (input.startsWith("cd")) {
-                String[] parts = input.split("\\s+", 2);
-
-                if (parts.length == 1) {
-                    changeDirectory("/");
-                } else {
-                    changeDirectory(parts[1]);
+            if (input.startsWith("!")) {
+                String expanded = resolveHistory(input);
+                if (expanded == null) {
+                    addHistory(input);
+                    continue;
                 }
+                executeLine(expanded);
+                addHistory(input);
                 continue;
             }
 
-            // ===== EJECUTAR COMANDO =====
-            executeCommand(input);
+            executeLine(input);
+            addHistory(input);
         }
 
         sc.close();
     }
 
+    private static void addHistory(String line) {
+        if (history.size() == 20) {
+            history.remove(0);
+        }
+        history.add(line);
+    }
+
+    private static String expandHistoryOnce(String token) {
+        if (history.isEmpty()) {
+            System.out.println("history: no hay comandos en el historial");
+            return null;
+        }
+        if (token.equals("!#")) {
+            return history.get(history.size() - 1);
+        }
+        if (token.startsWith("!")) {
+            String numStr = token.substring(1).trim();
+            try {
+                int n = Integer.parseInt(numStr);
+                if (n < 1 || n > history.size()) {
+                    System.out.println("history: numero fuera de rango");
+                    return null;
+                }
+                return history.get(n - 1);
+            } catch (NumberFormatException e) {
+                System.out.println("history: formato invalido");
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private static String resolveHistory(String token) {
+        String current = token;
+        for (int i = 0; i < 10; i++) {
+            if (!current.startsWith("!")) {
+                return current;
+            }
+            String next = expandHistoryOnce(current);
+            if (next == null) {
+                return null;
+            }
+            current = next.trim();
+        }
+        System.out.println("history: expansion infinita");
+        return null;
+    }
+
+    private static void executeLine(String line) {
+        if (containsOperator(line, "^^") && containsOperator(line, "=>")) {
+            System.out.println("Error: no se pueden mezclar ^^ y => en la misma linea");
+            return;
+        }
+
+        List<String> backgroundCommands = parseBackgroundCommands(line);
+        if (backgroundCommands != null) {
+            for (String cmd : backgroundCommands) {
+                if (cmd.equals("exit")) {
+                    System.out.println("Error: exit no se permite en comandos con ^^");
+                    return;
+                }
+                executeBackground(cmd);
+            }
+            return;
+        }
+
+        List<String> sequence = splitByOperator(line, "=>");
+        if (sequence.size() == 1) {
+            String cmd = sequence.get(0);
+            if (cmd.equals("exit")) {
+                System.out.println("Error: exit debe ser un comando unico");
+                return;
+            }
+            executeForeground(cmd);
+            return;
+        }
+
+        for (String cmd : sequence) {
+            if (cmd.equals("exit")) {
+                System.out.println("Error: exit no se permite en secuencias =>");
+                return;
+            }
+            executeForeground(cmd);
+        }
+    }
+
+    private static void executeForeground(String command) {
+        String trimmed = command.trim();
+        if (trimmed.isEmpty()) return;
+
+        System.out.println(trimmed + ":");
+
+        List<String> tokens;
+        try {
+            tokens = tokenize(trimmed);
+        } catch (IllegalArgumentException e) {
+            System.out.println(e.getMessage());
+            return;
+        }
+
+        if (tokens.isEmpty()) return;
+
+        String cmd = tokens.get(0);
+
+        if (cmd.equals("pwd")) {
+            System.out.println(currentDirectory.getAbsolutePath());
+            return;
+        }
+        if (cmd.equals("cd")) {
+            String path = tokens.size() > 1 ? tokens.get(1) : "/";
+            changeDirectory(path);
+            return;
+        }
+        if (cmd.equals("history")) {
+            printHistory();
+            return;
+        }
+        if (cmd.equals("exit")) {
+            System.out.println("Error: exit debe ser un comando unico");
+            return;
+        }
+
+        executeExternalForeground(tokens);
+    }
+
+    private static void executeBackground(String command) {
+        String trimmed = command.trim();
+        if (trimmed.isEmpty()) return;
+
+        List<String> tokens;
+        try {
+            tokens = tokenize(trimmed);
+        } catch (IllegalArgumentException e) {
+            System.out.println(e.getMessage());
+            return;
+        }
+
+        if (tokens.isEmpty()) return;
+
+        String cmd = tokens.get(0);
+        if (cmd.equals("cd") || cmd.equals("pwd") || cmd.equals("history") || cmd.equals("exit")) {
+            System.out.println("Error: builtins no se permiten con ^^");
+            return;
+        }
+
+        try {
+            ProcessBuilder pb = new ProcessBuilder(resolveCommand(tokens));
+            pb.directory(currentDirectory);
+            pb.inheritIO();
+
+            Process process = pb.start();
+            System.out.println("[" + jobCounter + "] " + process.pid());
+            jobCounter++;
+
+        } catch (IOException e) {
+            System.out.println("Error ejecutando comando en background: " + e.getMessage());
+        }
+    }
+
+    private static void executeExternalForeground(List<String> tokens) {
+        ProcessBuilder pb = new ProcessBuilder(resolveCommand(tokens));
+        pb.directory(currentDirectory);
+
+        try {
+            Process process = pb.start();
+
+            ByteArrayOutputStream outBuffer = new ByteArrayOutputStream();
+            ByteArrayOutputStream errBuffer = new ByteArrayOutputStream();
+
+            Thread outThread = new Thread(() -> streamToBuffer(process.getInputStream(), outBuffer));
+            Thread errThread = new Thread(() -> streamToBuffer(process.getErrorStream(), errBuffer));
+
+            outThread.start();
+            errThread.start();
+
+            int exitCode = process.waitFor();
+            outThread.join();
+            errThread.join();
+
+            String stdout = outBuffer.toString();
+            String stderr = errBuffer.toString();
+
+            if (exitCode == 0) {
+                if (!stdout.isEmpty()) {
+                    System.out.print(stdout);
+                }
+            } else {
+                if (!stderr.isEmpty()) {
+                    System.out.print(stderr);
+                }
+            }
+
+        } catch (IOException | InterruptedException e) {
+            System.out.println("Error ejecutando comando: " + e.getMessage());
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private static void streamToBuffer(InputStream in, ByteArrayOutputStream buffer) {
+        try {
+            byte[] data = new byte[4096];
+            int n;
+            while ((n = in.read(data)) != -1) {
+                buffer.write(data, 0, n);
+            }
+        } catch (IOException ignored) {
+        }
+    }
+
+    private static List<String> resolveCommand(List<String> tokens) {
+        if (tokens.isEmpty()) return tokens;
+
+        String cmd = tokens.get(0);
+        if (cmd.contains("/") || cmd.contains("\\")) {
+            return tokens;
+        }
+
+        String os = System.getProperty("os.name").toLowerCase(Locale.ROOT);
+        if (os.contains("windows")) {
+            List<String> withCmd = new ArrayList<>();
+            withCmd.add("cmd");
+            withCmd.add("/c");
+            withCmd.addAll(tokens);
+            return withCmd;
+        }
+
+        List<String> withBin = new ArrayList<>(tokens);
+        withBin.set(0, "/bin/" + cmd);
+        if (new File(withBin.get(0)).exists()) {
+            return withBin;
+        }
+
+        List<String> withUsrBin = new ArrayList<>(tokens);
+        withUsrBin.set(0, "/usr/bin/" + cmd);
+        if (new File(withUsrBin.get(0)).exists()) {
+            return withUsrBin;
+        }
+
+        return tokens;
+    }
+
     private static void changeDirectory(String path) {
         try {
-
             File newDir;
 
             if (path.equals("..")) {
                 newDir = currentDirectory.getParentFile();
                 if (newDir == null) return;
-            }
-            else if (path.startsWith("/")) {
+            } else if (path.startsWith("/")) {
                 newDir = new File(path);
-            } 
-            else {
+            } else {
                 newDir = new File(currentDirectory, path);
             }
 
             if (newDir.exists() && newDir.isDirectory()) {
                 currentDirectory = newDir.getCanonicalFile();
             } else {
-                System.out.println("Directorio no válido");
+                System.out.println("Directorio no valido");
             }
 
         } catch (IOException e) {
@@ -74,231 +309,182 @@ public class Jsh {
         }
     }
 
-    private static void executeCommand(String command) {
-
-        try {
-
-            // ===== PIPES =====
-            if (command.contains("|")) {
-                executePipe(command);
-                return;
-            }
-
-            // ===== REDIRECCIONES (>, >>, <) =====
-            if (command.contains(">") || command.contains("<")) {
-                executeRedirection(command);
-                return;
-            }
-
-            // ===== BACKGROUND =====
-            boolean background = command.endsWith("&");
-
-            if (background) {
-                command = command.substring(0, command.length() - 1).trim();
-            }
-
-            String[] cmdParts = command.split("\\s+");
-
-            ProcessBuilder pb = new ProcessBuilder(cmdParts);
-            pb.directory(currentDirectory);
-            pb.redirectErrorStream(true);
-
-            Process process = pb.start();
-
-            if (!background) {
-
-                BufferedReader reader =
-                        new BufferedReader(new InputStreamReader(process.getInputStream()));
-
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    System.out.println(line);
-                }
-
-                int exitCode = process.waitFor();
-                System.out.println("[Proceso terminado con código " + exitCode + "]");
-
-            } else {
-                System.out.println("[Proceso ejecutándose en background]");
-            }
-
-        } catch (Exception e) {
-            System.out.println("Error ejecutando comando: " + e.getMessage());
+    private static void printHistory() {
+        int index = 1;
+        for (String entry : history) {
+            System.out.println(index + " " + entry);
+            index++;
         }
     }
 
-    // ===== REDIRECCIONES =====
+    private static List<String> tokenize(String input) {
+        List<String> tokens = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        char quote = 0;
+        boolean escape = false;
 
-    // ===== REDIRECCIONES =====
+        for (int i = 0; i < input.length(); i++) {
+            char c = input.charAt(i);
 
-private static void executeRedirection(String command) {
-
-    try {
-
-        boolean append = command.contains(">>");
-        String[] parts;
-
-        if (append) {
-            parts = command.split(">>", 2);
-        } 
-        else if (command.contains(">")) {
-            parts = command.split(">", 2);
-        } 
-        else {
-            parts = command.split("<", 2);
-        }
-
-        String left = parts[0].trim();
-        String right = parts[1].trim();
-
-        String[] cmdParts = left.split("\\s+");
-
-        ProcessBuilder pb = new ProcessBuilder(cmdParts);
-        pb.directory(currentDirectory);
-        pb.redirectErrorStream(true);
-
-        File file = new File(currentDirectory, right);
-
-        // ===== OUTPUT REDIRECTION =====
-        if (command.contains(">")) {
-
-            if (append) {
-                pb.redirectOutput(ProcessBuilder.Redirect.appendTo(file));
-            } else {
-                pb.redirectOutput(file);
-            }
-        }
-        // ===== INPUT REDIRECTION =====
-        else if (command.contains("<")) {
-
-            pb.redirectInput(file);
-        }
-
-        Process process = pb.start();
-
-        // 🔥 SOLUCIÓN CLAVE:
-        // Si NO hay redirección de entrada, cerrar STDIN del proceso
-        if (!command.contains("<")) {
-            process.getOutputStream().close();
-        }
-
-        process.waitFor();
-
-        System.out.println("[Redirección completada]");
-
-    } catch (Exception e) {
-        System.out.println("Error en redirección: " + e.getMessage());
-    }
-}
-
-
-    // ===== PIPES CON REDIRECCIONES CORREGIDO =====
-
-private static void executePipe(String command) {
-
-    try {
-
-        String[] commands = command.split("\\|");
-        Process previousProcess = null;
-        Process currentProcess = null;
-
-        for (int i = 0; i < commands.length; i++) {
-
-            String cmd = commands[i].trim();
-
-            boolean append = false;
-            boolean outputRedirect = false;
-            boolean inputRedirect = false;
-
-            File redirectFile = null;
-
-            String actualCommand = cmd;
-
-            // ===== DETECTAR >> PRIMERO =====
-            if (cmd.contains(">>")) {
-                append = true;
-                outputRedirect = true;
-
-                String[] parts = cmd.split(">>", 2);
-                actualCommand = parts[0].trim();
-                redirectFile = new File(currentDirectory, parts[1].trim());
+            if (escape) {
+                current.append(c);
+                escape = false;
+                continue;
             }
 
-            // ===== DETECTAR > =====
-            else if (cmd.contains(">")) {
-                outputRedirect = true;
-
-                String[] parts = cmd.split(">", 2);
-                actualCommand = parts[0].trim();
-                redirectFile = new File(currentDirectory, parts[1].trim());
+            if (c == '\\') {
+                escape = true;
+                continue;
             }
 
-            // ===== DETECTAR < =====
-            else if (cmd.contains("<")) {
-                inputRedirect = true;
-
-                String[] parts = cmd.split("<", 2);
-                actualCommand = parts[0].trim();
-                redirectFile = new File(currentDirectory, parts[1].trim());
-            }
-
-            String[] cmdParts = actualCommand.split("\\s+");
-
-            ProcessBuilder pb = new ProcessBuilder(cmdParts);
-            pb.directory(currentDirectory);
-            pb.redirectErrorStream(true);
-
-            // ===== INPUT REDIRECTION =====
-            if (inputRedirect && redirectFile != null) {
-                pb.redirectInput(redirectFile);
-            }
-
-            // ===== OUTPUT REDIRECTION SOLO EN ÚLTIMO =====
-            if (i == commands.length - 1 && outputRedirect && redirectFile != null) {
-
-                if (append) {
-                    pb.redirectOutput(ProcessBuilder.Redirect.appendTo(redirectFile));
+            if (quote != 0) {
+                if (c == quote) {
+                    quote = 0;
                 } else {
-                    pb.redirectOutput(redirectFile);
+                    current.append(c);
                 }
+                continue;
             }
 
-            currentProcess = pb.start();
-
-            // ===== CONECTAR PIPE =====
-            if (previousProcess != null) {
-
-                InputStream prevOut = previousProcess.getInputStream();
-                OutputStream currIn = currentProcess.getOutputStream();
-
-                Thread pipeThread = new Thread(() -> {
-                    try {
-                        prevOut.transferTo(currIn);
-                        currIn.close();
-                    } catch (IOException ignored) {}
-                });
-
-                pipeThread.start();
+            if (c == '"' || c == '\'') {
+                quote = c;
+                continue;
             }
 
-            previousProcess = currentProcess;
+            if (Character.isWhitespace(c)) {
+                if (current.length() > 0) {
+                    tokens.add(current.toString());
+                    current.setLength(0);
+                }
+                continue;
+            }
+
+            current.append(c);
         }
 
-        // Mostrar salida solo si no hay redirección final
-        BufferedReader reader =
-                new BufferedReader(new InputStreamReader(previousProcess.getInputStream()));
-
-        String line;
-        while ((line = reader.readLine()) != null) {
-            System.out.println(line);
+        if (quote != 0) {
+            throw new IllegalArgumentException("Error: comillas no cerradas");
+        }
+        if (escape) {
+            throw new IllegalArgumentException("Error: caracter de escape incompleto");
         }
 
-        previousProcess.waitFor();
+        if (current.length() > 0) {
+            tokens.add(current.toString());
+        }
 
-    } catch (Exception e) {
-        System.out.println("Error ejecutando pipe: " + e.getMessage());
+        return tokens;
     }
-}
 
+    private static boolean containsOperator(String line, String op) {
+        char quote = 0;
+        boolean escape = false;
 
+        for (int i = 0; i < line.length(); i++) {
+            char c = line.charAt(i);
+
+            if (escape) {
+                escape = false;
+                continue;
+            }
+
+            if (c == '\\') {
+                escape = true;
+                continue;
+            }
+
+            if (quote != 0) {
+                if (c == quote) quote = 0;
+                continue;
+            }
+
+            if (c == '"' || c == '\'') {
+                quote = c;
+                continue;
+            }
+
+            if (line.startsWith(op, i)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static List<String> splitByOperator(String line, String op) {
+        List<String> parts = new ArrayList<>();
+        char quote = 0;
+        boolean escape = false;
+        int start = 0;
+        int i = 0;
+
+        while (i < line.length()) {
+            char c = line.charAt(i);
+
+            if (escape) {
+                escape = false;
+                i++;
+                continue;
+            }
+
+            if (c == '\\') {
+                escape = true;
+                i++;
+                continue;
+            }
+
+            if (quote != 0) {
+                if (c == quote) quote = 0;
+                i++;
+                continue;
+            }
+
+            if (c == '"' || c == '\'') {
+                quote = c;
+                i++;
+                continue;
+            }
+
+            if (line.startsWith(op, i)) {
+                parts.add(line.substring(start, i).trim());
+                start = i + op.length();
+                i += op.length();
+                continue;
+            }
+
+            i++;
+        }
+
+        parts.add(line.substring(start).trim());
+        return parts;
+    }
+
+    private static List<String> parseBackgroundCommands(String line) {
+        if (!containsOperator(line, "^^")) {
+            return null;
+        }
+
+        List<String> parts = splitByOperator(line, "^^");
+        if (parts.isEmpty()) {
+            System.out.println("Error: sintaxis invalida con ^^");
+            return Collections.emptyList();
+        }
+
+        String last = parts.get(parts.size() - 1);
+        if (!last.isEmpty()) {
+            System.out.println("Error: cada comando en background debe terminar con ^^");
+            return Collections.emptyList();
+        }
+
+        parts.remove(parts.size() - 1);
+
+        for (String part : parts) {
+            if (part.isEmpty()) {
+                System.out.println("Error: comando vacio en background");
+                return Collections.emptyList();
+            }
+        }
+
+        return parts;
+    }
 }
