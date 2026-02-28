@@ -8,7 +8,7 @@ Contribuciones:
 
 - Luis Eduardo Zaldumbide: Apoyo en la lógica del procesamiento de comandos y validación de entradas. Implementación y pruebas del operador de ejecución en segundo plano (^^). Manejo de control de procesos (espera de procesos en foreground y no bloqueo en background). Mejora en el manejo de errores para comandos inválidos o mal formados. Pruebas de casos límite (comandos vacíos, múltiples operadores, combinaciones inválidas) y ajustes para asegurar un comportamiento estable del shell.
 
-- Martin Ruiz: Integración Docker (Dockerfile, estructura de carpetas/archivos, iproute2).
+- Martin Ruiz: Diseño y configuración completa del entorno de contenedorización con Docker. Creación del Dockerfile multi-etapa, incluyendo la instalación de dependencias del sistema (iproute2) necesarias para comandos de red como ip addr. Definición de la estructura jerárquica de carpetas y archivos de prueba (/folder1 hasta /folder7) dentro del contenedor para facilitar la demostración de los comandos cd, ls y pwd del shell. Compilación y empaquetado del proyecto Java dentro de la imagen. Publicación de la imagen en Docker Hub (miatulcan/jsh:javashell) para distribución sencilla. Redacción de la documentación del proyecto (README) con instrucciones de uso, pasos de ejecución.
 
 Comentarios/observaciones:
 - Repositorio GitHub: https://github.com/miatulcan/JavaShell
@@ -17,27 +17,22 @@ Comentarios/observaciones:
   docker tag jsh miatulcan/jsh:javashell
   docker push miatulcan/jsh:javashell
 
-Pasos para abrir y ejecutar el trabajo (asumiendo solo Git y Docker instalados):
-1) Clonar el repositorio:
-   git clone https://github.com/miatulcan/JavaShell
-   cd JavaShell
+Pasos para abrir y ejecutar el trabajo (solo se necesita Docker instalado, no es necesario descargarse el proyecto desde GitHub):
+1) Descargar la imagen publicada desde Docker Hub:
+   docker pull miatulcan/jsh:javashell
 
-2) Construir la imagen localmente (desde Dockerfile):
-   docker build -t miatulcan/jsh:javashell .
-
-3) Ejecutar el contenedor:
+2) Ejecutar el contenedor:
    docker run -it --rm miatulcan/jsh:javashell
 
-4) Probar dentro del shell:
+   Por conveniencia, se pueden combinar ambos comandos en uno solo:
+   docker pull miatulcan/jsh:javashell && docker run -it --rm miatulcan/jsh:javashell
+
+3) Probar dentro del shell:
    - Ver prompt con ruta actual: jsh:/ruta>>
    - Probar builtins: pwd, cd /folder1, history, exit
    - Probar comandos externos: ls, echo "hola mundo", ip addr, sleep 1, date
    - Probar secuencia en primer plano: echo hola => sleep 1 => date
    - Probar background: sleep 3 ^^ echo "bg" ^^
    - Probar exit
-
-Opcional (si prefiere descargar imagen ya publicada):
-   docker pull miatulcan/jsh:javashell
-   docker run -it --rm miatulcan/jsh:javashell
 
 
